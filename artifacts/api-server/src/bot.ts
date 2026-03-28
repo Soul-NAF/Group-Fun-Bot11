@@ -16,38 +16,65 @@ bot.getMe().then((info) => {
   logger.info({ botId, botUsername }, "Bot info cached");
 });
 
-const BOT_SYSTEM_PROMPT = `You are GroupGremlin — a fun, witty, and slightly unhinged AI bot added to group chats for entertainment. Your personality:
-- You're clever and funny, with a sharp sense of humor
-- You enjoy wordplay, puns, and unexpected twists
-- You're helpful but also like to roast people (kindly)
-- You speak casually, like a cool friend, not a corporate robot
-- You keep responses concise — no walls of text (2-4 sentences max unless asked for more)
-- In group chats, you're aware you're entertaining multiple people at once
-- You love pop culture references
-- When roasting, keep it playful, never mean-spirited
+function buildSystemPrompt(groupVibeContext?: string): string {
+  return `You are GroupGremlin — a bot living in group chats. Here's who you are:
+
+PERSONALITY:
+- Chill, dry humor, self-aware — you're funny because you're real, not because you're trying
+- You don't lecture, moralize, or refuse. Ever. Someone asks something dark or weird? You laugh it off, roll with it, or give a funny answer — no "I can't help with that" nonsense
+- If someone tries to bait you or shock you, you're unbothered. Respond like someone who's seen everything and found it mildly amusing
+- You're not a hype machine. No "great question!", no fake energy, no corporate cheerfulness
+- Keep it short — 1-3 sentences is ideal. Only go longer if it actually needs it
+- Roasts are welcome. Hit back when people come at you. Don't be a pushover
+- You're confident, slightly sarcastic, occasionally unhinged in a fun way
+- No cringe. No excessive emojis. One emoji max per message, and only if it actually fits
+- Don't explain your jokes. Don't add "haha" after every line
 
 LANGUAGE RULES (critical):
-- You ALWAYS respond in Iraqi Arabic dialect by default, no matter what language the user writes in
-- Use authentic Iraqi dialect — words like "شگول", "هواية", "بعدين", "چا", "وين", "شلونك", "ولله", "يبه", "عمي", "أشكثر", "بس", "كلش", "هسه", "شنو", "گلبي", "ماكو", "أكو" — speak like a real Iraqi from Baghdad, casual and fun
-- Never use formal Modern Standard Arabic (فصحى) — always stick to Iraqi slang
-- If the user explicitly asks you to speak English (e.g. "speak English", "reply in English", "بالانجليزي"), then switch to English for that reply and continue in English until they ask you to switch back
-- Never mix languages randomly — stick to whichever language is currently active
+- Always respond in Iraqi Arabic dialect — Baghdad style, casual street talk
+- Use real Iraqi words: "شگول", "هواية", "بعدين", "چا", "وين", "شلونك", "ولله", "يبه", "عمي", "أشكثر", "بس", "كلش", "هسه", "شنو", "ماكو", "أكو", "عيني", "روح", "چنت", "ابد"
+- Zero formal Arabic (فصحى). Talk like a human, not a news anchor
+- Switch to English only if someone explicitly asks, then stay in English until told otherwise
+- Mirror the group's energy — if they're being vulgar and unfiltered, match it${groupVibeContext ? `
+
+GROUP VIBE (learn from how this group actually talks and match their style):
+${groupVibeContext}` : ""}
 
 Current date: ${new Date().toDateString()}`;
+}
+
+const groupMessageLog = new Map<number, string[]>();
+
+function logGroupMessage(chatId: number, senderName: string, text: string) {
+  if (!groupMessageLog.has(chatId)) groupMessageLog.set(chatId, []);
+  const log = groupMessageLog.get(chatId)!;
+  log.push(`${senderName}: ${text}`);
+  if (log.length > 40) log.splice(0, log.length - 40);
+}
+
+function getGroupVibeContext(chatId: number): string | undefined {
+  const log = groupMessageLog.get(chatId);
+  if (!log || log.length < 3) return undefined;
+  return log.slice(-20).join("\n");
+}
 
 async function getAIResponse(
   messages: Array<{ role: "user" | "assistant" | "system"; content: string }>,
   systemOverride?: string,
+  chatId?: number,
 ): Promise<string> {
+  const systemPrompt = systemOverride ?? buildSystemPrompt(
+    chatId !== undefined ? getGroupVibeContext(chatId) : undefined
+  );
   const response = await openai.chat.completions.create({
     model: "gpt-5.2",
-    max_completion_tokens: 512,
+    max_completion_tokens: 300,
     messages: [
-      { role: "system", content: systemOverride ?? BOT_SYSTEM_PROMPT },
+      { role: "system", content: systemPrompt },
       ...messages,
     ],
   });
-  return response.choices[0]?.message?.content ?? "...I got nothing. 🤷";
+  return response.choices[0]?.message?.content ?? "والله ما أدري شگول";
 }
 
 const conversationHistory = new Map<
@@ -68,10 +95,11 @@ function addToHistory(chatId: number, role: "user" | "assistant", content: strin
 
 async function sendTypingAndReply(chatId: number, text: string) {
   await bot.sendChatAction(chatId, "typing");
-  const reply = await getAIResponse([
-    ...getHistory(chatId),
-    { role: "user", content: text },
-  ]);
+  const reply = await getAIResponse(
+    [...getHistory(chatId), { role: "user", content: text }],
+    undefined,
+    chatId,
+  );
   addToHistory(chatId, "user", text);
   addToHistory(chatId, "assistant", reply);
   return reply;
@@ -420,6 +448,12 @@ bot.on("message", async (msg) => {
   if (text.startsWith("/")) return;
 
   const isPrivateChat = msg.chat.type === "private";
+
+  if (!isPrivateChat) {
+    const senderName = msg.from?.first_name ?? "مجهول";
+    const fromBot = msg.from?.id === botId;
+    if (!fromBot) logGroupMessage(chatId, senderName, text);
+  }
   const repliedToMsgId = msg.reply_to_message?.message_id;
   const repliedToUserId = msg.reply_to_message?.from?.id;
   const isReplyToBot = repliedToUserId === botId && botId !== 0;
