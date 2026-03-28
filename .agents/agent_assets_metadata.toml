@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "sG45LBgOtrWgSylKNS3HO"
+uri = "file://attached_assets/bot_pfp.png"
+type = "image"
+title = "GroupGremlin Profile Picture"
