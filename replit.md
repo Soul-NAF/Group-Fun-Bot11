@@ -4,6 +4,19 @@
 
 pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.
 
+## GroupGremlin Telegram Bot
+
+A Telegram bot named **GroupGremlin** that uses GPT-5.2 AI to respond in group chats and DMs.
+
+- Bot code: `artifacts/api-server/src/bot.ts`
+- Starts automatically with the API server via `import "./bot"` in `src/index.ts`
+- Uses polling (no webhook required)
+- Integrates with `@workspace/integrations-openai-ai-server` for AI responses
+- Requires: `TELEGRAM_BOT_TOKEN` secret, `AI_INTEGRATIONS_OPENAI_BASE_URL`, `AI_INTEGRATIONS_OPENAI_API_KEY`
+- Commands: `/start`, `/joke`, `/roast`, `/ask`, `/clear`
+- In group chats: responds when @mentioned; in DMs: responds to all messages
+- Keeps last 20 messages of conversation history per chat
+
 ## Stack
 
 - **Monorepo tool**: pnpm workspaces

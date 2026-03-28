@@ -10,7 +10,7 @@ if (!token) {
 
 const bot = new TelegramBot(token, { polling: true });
 
-const BOT_SYSTEM_PROMPT = `You are a fun, witty, and slightly unhinged AI bot added to group chats for entertainment. Your personality:
+const BOT_SYSTEM_PROMPT = `You are GroupGremlin — a fun, witty, and slightly unhinged AI bot added to group chats for entertainment. Your personality:
 - You're clever and funny, with a sharp sense of humor
 - You enjoy wordplay, puns, and unexpected twists
 - You're helpful but also like to roast people (kindly)
@@ -71,7 +71,7 @@ async function sendTypingAndReply(chatId: number, text: string) {
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
   const name = msg.from?.first_name ?? "friend";
-  const greeting = `Hey ${name}! 👋 I'm your resident AI chaos agent. I'm here to chat, joke around, roast people (gently), and generally make this group more interesting.\n\nCommands:\n/ask [question] — Ask me anything\n/joke — Tell me a joke\n/roast [@username or description] — Get a playful roast\n/clear — Reset our conversation\n\nOr just @ mention me in a group, or DM me directly!`;
+  const greeting = `Hey ${name}! 👋 I'm GroupGremlin — your AI chaos agent. I'm here to chat, crack jokes, roast people (gently), and generally make this group way more interesting.\n\nCommands:\n/ask [question] — Ask me anything\n/joke — Fresh joke incoming\n/roast [@username or description] — Friendly roast 🔥\n/clear — Wipe my memory of you\n\nOr just @ mention me in a group, or DM me directly!`;
   await bot.sendMessage(chatId, greeting);
 });
 
