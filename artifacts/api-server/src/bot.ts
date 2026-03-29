@@ -89,6 +89,7 @@ async function getAIResponse(
   const model = PROVIDER_MODELS[ACTIVE_PROVIDER];
 
   if (ACTIVE_PROVIDER === "claude") {
+    logger.info({ model }, "Calling Claude");
     const userMessages = messages.filter((m) => m.role !== "system") as Array<{
       role: "user" | "assistant";
       content: string;
@@ -100,9 +101,12 @@ async function getAIResponse(
       messages: userMessages,
     });
     const block = response.content[0];
-    return block.type === "text" ? block.text : "والله ما أدري شگول";
+    const reply = block.type === "text" ? block.text : "والله ما أدري شگول";
+    logger.info({ reply }, "Claude reply");
+    return reply;
   }
 
+  logger.info({ model }, "Calling OpenAI");
   const response = await openai.chat.completions.create({
     model,
     max_completion_tokens: 1024,
