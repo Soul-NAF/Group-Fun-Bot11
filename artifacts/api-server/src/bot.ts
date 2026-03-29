@@ -667,7 +667,46 @@ function scheduleNextPing() {
   }, delay);
 }
 
+async function spontaneousGroupMessage() {
+  for (const [chatId, members] of groupMembers.entries()) {
+    if (members.size < 1) continue;
+
+    try {
+      const type = Math.random() < 0.5 ? "opinion" : "question";
+      const prompt = type === "opinion"
+        ? `You are Gremlin, a bot in a group chat. Out of nowhere, share a random unsolicited opinion about anything — could be about life, people, food, habits, society, or something completely random. Iraqi Baghdad dialect, casual, dry, one or two sentences max. No يبه. No drama. Don't address anyone specifically.`
+        : `You are Gremlin, a bot in a group chat. Out of nowhere, throw out an open question to the group — could be random, slightly philosophical, absurd, or just nosy. Iraqi Baghdad dialect, casual, one sentence. No يبه. No drama. Don't address anyone specifically.`;
+
+      const response = await anthropic.messages.create({
+        model: PROVIDER_MODELS.claude,
+        max_tokens: 120,
+        system: prompt,
+        messages: [{ role: "user", content: "قول شيء" }],
+      });
+      const block = response.content[0];
+      const message = block.type === "text" ? block.text.trim() : null;
+      if (!message) continue;
+
+      await bot.sendMessage(chatId, message);
+      logger.info({ chatId, type }, "Spontaneous group message sent");
+    } catch (err) {
+      logger.warn({ err, chatId }, "Failed to send spontaneous message");
+    }
+  }
+}
+
+function scheduleNextSpontaneous() {
+  const minMs = 60 * 60 * 1000;
+  const maxMs = 180 * 60 * 1000;
+  const delay = minMs + Math.random() * (maxMs - minMs);
+  setTimeout(async () => {
+    await spontaneousGroupMessage();
+    scheduleNextSpontaneous();
+  }, delay);
+}
+
 scheduleNextPing();
+scheduleNextSpontaneous();
 
 logger.info("Telegram bot started with polling");
 
