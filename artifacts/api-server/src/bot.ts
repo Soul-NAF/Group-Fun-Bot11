@@ -1,14 +1,15 @@
 import TelegramBot from "node-telegram-bot-api";
 import { openai } from "@workspace/integrations-openai-ai-server";
+import { anthropic } from "@workspace/integrations-anthropic-ai";
 import { logger } from "./lib/logger";
 
 // ─── AI PROVIDER CONFIG ──────────────────────────────────────────────────────
 // To switch providers, change ACTIVE_PROVIDER to "openai" or "claude"
 // and set the matching model name below.
-const ACTIVE_PROVIDER: "openai" | "claude" = "openai";
+const ACTIVE_PROVIDER: "openai" | "claude" = "claude";
 const PROVIDER_MODELS = {
   openai: "gpt-5.2",
-  claude: "claude-opus-4-5",
+  claude: "claude-opus-4-6",
 } as const;
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -78,6 +79,22 @@ async function getAIResponse(
     chatId !== undefined ? getGroupVibeContext(chatId) : undefined
   );
   const model = PROVIDER_MODELS[ACTIVE_PROVIDER];
+
+  if (ACTIVE_PROVIDER === "claude") {
+    const userMessages = messages.filter((m) => m.role !== "system") as Array<{
+      role: "user" | "assistant";
+      content: string;
+    }>;
+    const response = await anthropic.messages.create({
+      model,
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages: userMessages,
+    });
+    const block = response.content[0];
+    return block.type === "text" ? block.text : "والله ما أدري شگول";
+  }
+
   const response = await openai.chat.completions.create({
     model,
     max_completion_tokens: 1024,
