@@ -204,7 +204,8 @@ const COMMANDS_TEXT = `الأوامر:
 😈 /dare — تحدّي
 🙅 /neverhaveiever — ما سويت في حياتي
 ❓ /riddle — لغز وخمّن جوابه
-🧹 /clear — امسح ذاكرتي`;
+🧹 /clear — امسح ذاكرتي
+🎭 /sticker — يرسل ستيكر عشوائي من الجروب`;
 
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
@@ -469,6 +470,16 @@ bot.onText(/\/clear/, async (msg) => {
   await bot.sendMessage(chatId, "تم مسح الذاكرة! بداية جديدة 🧹 (نسيت كل الحرج اللي قلته مسبقاً)");
 });
 
+bot.onText(/\/sticker/, async (msg) => {
+  const chatId = msg.chat.id;
+  const stickerId = getRandomSticker(chatId);
+  if (stickerId) {
+    await bot.sendSticker(chatId, stickerId);
+  } else {
+    await bot.sendMessage(chatId, "ما عندي ستيكرات بعد — ابدأ ترسل ستيكرات بالجروب وراح أحفظها");
+  }
+});
+
 async function handleTriviaGuess(msg: TelegramBot.Message, state: TriviaState) {
   const chatId = msg.chat.id;
   const guess = msg.text?.trim().toUpperCase().charAt(0);
@@ -583,9 +594,9 @@ bot.on("message", async (msg) => {
     }
   } catch (err) {
     logger.error({ err }, "Error responding to message");
-    await bot.sendMessage(chatId, "أوبس، صار شيء غلط عندي. 😬", {
-      reply_to_message_id: msg.message_id,
-    });
+    try {
+      await bot.sendMessage(chatId, "صار شيء غلط عندي");
+    } catch (_) {}
   }
 });
 
