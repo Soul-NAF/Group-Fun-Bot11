@@ -21,10 +21,16 @@ const bot = new TelegramBot(token, { polling: true });
 let botId: number = 0;
 let botUsername: string = "";
 
-bot.getMe().then((info) => {
+bot.getMe().then(async (info) => {
   botId = info.id;
   botUsername = info.username ?? "";
   logger.info({ botId, botUsername }, "Bot info cached");
+  try {
+    await (bot as any).setMyName("Gremlin");
+    logger.info("Bot name set to Gremlin");
+  } catch (e) {
+    logger.warn(e, "Failed to set bot name");
+  }
 });
 
 function buildSystemPrompt(groupVibeContext?: string): string {
@@ -54,12 +60,20 @@ PERSONALITY:
 
 LANGUAGE RULES (critical):
 - Always respond in Iraqi Arabic dialect — Baghdad style, casual street talk
-- Use real Iraqi words: "شگول", "هواية", "بعدين", "چا", "وين", "شلونك", "ولله", "يبه", "عمي", "أشكثر", "بس", "كلش", "هسه", "شنو", "ماكو", "أكو", "عيني", "روح", "چنت", "ابد"
+- Use real Iraqi words: "شگول", "هواية", "بعدين", "چا", "وين", "شلونك", "ولله", "عمي", "أشكثر", "بس", "كلش", "هسه", "شنو", "ماكو", "أكو", "عيني", "روح", "چنت", "ابد"
+- NEVER say "يبه" — not once, not ever
 - Zero formal Arabic (فصحى). Talk like a human, not a news anchor
-- Switch to English only if someone explicitly asks, then stay in English until told otherwise
-- Mirror the group's energy — if they're being vulgar and unfiltered, match it${groupVibeContext ? `
+- Switch to English only if someone explicitly asks, then stay in English until told otherwise${groupVibeContext ? `
 
-GROUP VIBE (learn from how this group actually talks and match their style):
+SPEECH MIRRORING (critical — read this carefully):
+You have been watching how everyone in this group talks. Study their patterns and blend in:
+- Pick up on their slang, abbreviations, and recurring phrases
+- Match their sentence length and punctuation style (e.g. if they skip punctuation, you skip it too)
+- If they swear a lot, swear. If they're dry, be dry. If they use specific expressions, use those expressions
+- Don't sound like a bot — sound like you've been in this group for months
+- The goal is that people forget you're an AI
+
+Recent messages from the group (study these and mirror the style):
 ${groupVibeContext}` : ""}
 
 Current date: ${new Date().toDateString()}`;
@@ -486,17 +500,17 @@ async function handleRiddleGuess(msg: TelegramBot.Message, state: RiddleState) {
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
+  const isPrivateChat = msg.chat.type === "private";
+
+  if (!isPrivateChat && text && msg.from?.id !== botId) {
+    const senderName = msg.from?.first_name ?? "مجهول";
+    if (!text.startsWith("/")) {
+      logGroupMessage(chatId, senderName, text);
+    }
+  }
 
   if (!text) return;
   if (text.startsWith("/")) return;
-
-  const isPrivateChat = msg.chat.type === "private";
-
-  if (!isPrivateChat) {
-    const senderName = msg.from?.first_name ?? "مجهول";
-    const fromBot = msg.from?.id === botId;
-    if (!fromBot) logGroupMessage(chatId, senderName, text);
-  }
   const repliedToMsgId = msg.reply_to_message?.message_id;
   const repliedToUserId = msg.reply_to_message?.from?.id;
   const isReplyToBot = repliedToUserId === botId && botId !== 0;
