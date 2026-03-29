@@ -81,6 +81,29 @@ Current date: ${new Date().toDateString()}`;
 
 const groupMessageLog = new Map<number, string[]>();
 const groupStickerLog = new Map<number, string[]>();
+const groupMembers = new Map<number, Map<number, { firstName: string; username?: string }>>();
+
+function trackMember(chatId: number, from: TelegramBot.User) {
+  if (!groupMembers.has(chatId)) groupMembers.set(chatId, new Map());
+  groupMembers.get(chatId)!.set(from.id, {
+    firstName: from.first_name,
+    username: from.username,
+  });
+}
+
+function getRandomMember(chatId: number) {
+  const members = groupMembers.get(chatId);
+  if (!members || members.size === 0) return null;
+  const list = [...members.entries()];
+  const [userId, info] = list[Math.floor(Math.random() * list.length)];
+  return { userId, ...info };
+}
+
+function mentionUser(user: { userId: number; firstName: string; username?: string }): string {
+  return user.username
+    ? `@${user.username}`
+    : `[${user.firstName}](tg://user?id=${user.userId})`;
+}
 
 function logGroupMessage(chatId: number, senderName: string, text: string) {
   if (!groupMessageLog.has(chatId)) groupMessageLog.set(chatId, []);
@@ -529,8 +552,9 @@ bot.on("message", async (msg) => {
   const text = msg.text;
   const isPrivateChat = msg.chat.type === "private";
 
-  if (!isPrivateChat && msg.from?.id !== botId) {
-    const senderName = msg.from?.first_name ?? "مجهول";
+  if (!isPrivateChat && msg.from && msg.from.id !== botId) {
+    trackMember(chatId, msg.from);
+    const senderName = msg.from.first_name ?? "مجهول";
     if (text && !text.startsWith("/")) {
       logGroupMessage(chatId, senderName, text);
     }
@@ -603,6 +627,47 @@ bot.on("message", async (msg) => {
 bot.on("polling_error", (err) => {
   logger.error({ err }, "Telegram polling error");
 });
+
+async function pingRandomMember() {
+  for (const [chatId, members] of groupMembers.entries()) {
+    if (members.size < 2) continue;
+    const member = getRandomMember(chatId);
+    if (!member) continue;
+
+    try {
+      const mention = mentionUser(member);
+      const prompt = `You are Gremlin. Generate a short, casual, slightly nosy or provocative question in Iraqi Baghdad dialect directed at someone named ${member.firstName}. Address them directly. Keep it natural — like something a bored group chat member would randomly ask. One sentence only. No يبه. No drama.`;
+      const response = await anthropic.messages.create({
+        model: PROVIDER_MODELS.claude,
+        max_tokens: 100,
+        system: prompt,
+        messages: [{ role: "user", content: "اسأل" }],
+      });
+      const block = response.content[0];
+      const question = block.type === "text" ? block.text.trim() : null;
+      if (!question) continue;
+
+      await bot.sendMessage(chatId, `${mention} ${question}`, {
+        parse_mode: "Markdown",
+      });
+      logger.info({ chatId, member: member.firstName }, "Random ping sent");
+    } catch (err) {
+      logger.warn({ err, chatId }, "Failed to send random ping");
+    }
+  }
+}
+
+function scheduleNextPing() {
+  const minMs = 45 * 60 * 1000;
+  const maxMs = 120 * 60 * 1000;
+  const delay = minMs + Math.random() * (maxMs - minMs);
+  setTimeout(async () => {
+    await pingRandomMember();
+    scheduleNextPing();
+  }, delay);
+}
+
+scheduleNextPing();
 
 logger.info("Telegram bot started with polling");
 
