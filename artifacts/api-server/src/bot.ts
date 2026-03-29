@@ -2,6 +2,16 @@ import TelegramBot from "node-telegram-bot-api";
 import { openai } from "@workspace/integrations-openai-ai-server";
 import { logger } from "./lib/logger";
 
+// ─── AI PROVIDER CONFIG ──────────────────────────────────────────────────────
+// To switch providers, change ACTIVE_PROVIDER to "openai" or "claude"
+// and set the matching model name below.
+const ACTIVE_PROVIDER: "openai" | "claude" = "openai";
+const PROVIDER_MODELS = {
+  openai: "gpt-5.2",
+  claude: "claude-opus-4-5",
+} as const;
+// ─────────────────────────────────────────────────────────────────────────────
+
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN must be set.");
 
@@ -67,8 +77,9 @@ async function getAIResponse(
   const systemPrompt = systemOverride ?? buildSystemPrompt(
     chatId !== undefined ? getGroupVibeContext(chatId) : undefined
   );
+  const model = PROVIDER_MODELS[ACTIVE_PROVIDER];
   const response = await openai.chat.completions.create({
-    model: "gpt-5.2",
+    model,
     max_completion_tokens: 1024,
     messages: [
       { role: "system", content: systemPrompt },
