@@ -80,12 +80,28 @@ Current date: ${new Date().toDateString()}`;
 }
 
 const groupMessageLog = new Map<number, string[]>();
+const groupStickerLog = new Map<number, string[]>();
 
 function logGroupMessage(chatId: number, senderName: string, text: string) {
   if (!groupMessageLog.has(chatId)) groupMessageLog.set(chatId, []);
   const log = groupMessageLog.get(chatId)!;
   log.push(`${senderName}: ${text}`);
   if (log.length > 40) log.splice(0, log.length - 40);
+}
+
+function logGroupSticker(chatId: number, fileId: string) {
+  if (!groupStickerLog.has(chatId)) groupStickerLog.set(chatId, []);
+  const log = groupStickerLog.get(chatId)!;
+  if (!log.includes(fileId)) {
+    log.push(fileId);
+    if (log.length > 60) log.splice(0, log.length - 60);
+  }
+}
+
+function getRandomSticker(chatId: number): string | null {
+  const log = groupStickerLog.get(chatId);
+  if (!log || log.length === 0) return null;
+  return log[Math.floor(Math.random() * log.length)];
 }
 
 function getGroupVibeContext(chatId: number): string | undefined {
@@ -502,10 +518,13 @@ bot.on("message", async (msg) => {
   const text = msg.text;
   const isPrivateChat = msg.chat.type === "private";
 
-  if (!isPrivateChat && text && msg.from?.id !== botId) {
+  if (!isPrivateChat && msg.from?.id !== botId) {
     const senderName = msg.from?.first_name ?? "مجهول";
-    if (!text.startsWith("/")) {
+    if (text && !text.startsWith("/")) {
       logGroupMessage(chatId, senderName, text);
+    }
+    if (msg.sticker?.file_id) {
+      logGroupSticker(chatId, msg.sticker.file_id);
     }
   }
 
@@ -555,6 +574,13 @@ bot.on("message", async (msg) => {
     await bot.sendMessage(chatId, reply, {
       reply_to_message_id: msg.message_id,
     });
+
+    if (!isPrivateChat && Math.random() < 0.18) {
+      const stickerId = getRandomSticker(chatId);
+      if (stickerId) {
+        await bot.sendSticker(chatId, stickerId);
+      }
+    }
   } catch (err) {
     logger.error({ err }, "Error responding to message");
     await bot.sendMessage(chatId, "أوبس، صار شيء غلط عندي. 😬", {
