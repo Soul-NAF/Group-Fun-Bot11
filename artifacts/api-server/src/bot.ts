@@ -1,11 +1,12 @@
 import TelegramBot from "node-telegram-bot-api";
 import { openai } from "@workspace/integrations-openai-ai-server";
 import { anthropic } from "@workspace/integrations-anthropic-ai";
+import { db } from "@workspace/db";
+import { botGroups, botMembers, botGroupMembers, botMessages, botStickers, botActiveGames } from "@workspace/db/schema";
+import { eq, desc, and, lt } from "drizzle-orm";
 import { logger } from "./lib/logger";
 
 // ─── AI PROVIDER CONFIG ──────────────────────────────────────────────────────
-// To switch providers, change ACTIVE_PROVIDER to "openai" or "claude"
-// and set the matching model name below.
 const ACTIVE_PROVIDER: "openai" | "claude" = "claude";
 const PROVIDER_MODELS = {
   openai: "gpt-5.2",
@@ -79,24 +80,44 @@ ${groupVibeContext}` : ""}
 Current date: ${new Date().toDateString()}`;
 }
 
-const groupMessageLog = new Map<number, string[]>();
-const groupStickerLog = new Map<number, string[]>();
-const groupMembers = new Map<number, Map<number, { firstName: string; username?: string }>>();
+// ─── DATABASE HELPERS ────────────────────────────────────────────────────────
 
-function trackMember(chatId: number, from: TelegramBot.User) {
-  if (!groupMembers.has(chatId)) groupMembers.set(chatId, new Map());
-  groupMembers.get(chatId)!.set(from.id, {
-    firstName: from.first_name,
-    username: from.username,
-  });
+async function ensureGroup(chatId: number, type: string, title?: string) {
+  const existing = await db.select().from(botGroups).where(eq(botGroups.id, BigInt(chatId))).limit(1);
+  if (existing.length > 0) {
+    await db.update(botGroups).set({ updatedAt: new Date(), title: title ?? existing[0].title }).where(eq(botGroups.id, BigInt(chatId)));
+  } else {
+    await db.insert(botGroups).values({ id: BigInt(chatId), type, title: title ?? "" }).onConflictDoNothing();
+  }
 }
 
-function getRandomMember(chatId: number) {
-  const members = groupMembers.get(chatId);
-  if (!members || members.size === 0) return null;
-  const list = [...members.entries()];
-  const [userId, info] = list[Math.floor(Math.random() * list.length)];
-  return { userId, ...info };
+async function trackMember(chatId: number, from: TelegramBot.User) {
+  await ensureGroup(chatId, "group");
+  await db.insert(botMembers).values({
+    id: BigInt(from.id),
+    firstName: from.first_name ?? "",
+    username: from.username ?? null,
+  }).onConflictDoUpdate({
+    target: botMembers.id,
+    set: { firstName: from.first_name ?? "", username: from.username ?? null },
+  });
+  await db.insert(botGroupMembers).values({
+    chatId: BigInt(chatId),
+    userId: BigInt(from.id),
+  }).onConflictDoNothing();
+}
+
+async function getRandomMember(chatId: number) {
+  const rows = await db.select({
+    userId: botGroupMembers.userId,
+    firstName: botMembers.firstName,
+    username: botMembers.username,
+  }).from(botGroupMembers)
+    .innerJoin(botMembers, eq(botGroupMembers.userId, botMembers.id))
+    .where(eq(botGroupMembers.chatId, BigInt(chatId)));
+  if (rows.length === 0) return null;
+  const row = rows[Math.floor(Math.random() * rows.length)];
+  return { userId: Number(row.userId), firstName: row.firstName, username: row.username ?? undefined };
 }
 
 function mentionUser(user: { userId: number; firstName: string; username?: string }): string {
@@ -105,33 +126,77 @@ function mentionUser(user: { userId: number; firstName: string; username?: strin
     : `[${user.firstName}](tg://user?id=${user.userId})`;
 }
 
-function logGroupMessage(chatId: number, senderName: string, text: string) {
-  if (!groupMessageLog.has(chatId)) groupMessageLog.set(chatId, []);
-  const log = groupMessageLog.get(chatId)!;
-  log.push(`${senderName}: ${text}`);
-  if (log.length > 40) log.splice(0, log.length - 40);
+async function logGroupMessage(chatId: number, senderName: string, text: string) {
+  await db.insert(botMessages).values({
+    chatId: BigInt(chatId),
+    senderName,
+    text,
+    role: "user",
+  });
 }
 
-function logGroupSticker(chatId: number, fileId: string) {
-  if (!groupStickerLog.has(chatId)) groupStickerLog.set(chatId, []);
-  const log = groupStickerLog.get(chatId)!;
-  if (!log.includes(fileId)) {
-    log.push(fileId);
-    if (log.length > 60) log.splice(0, log.length - 60);
-  }
+async function logBotMessage(chatId: number, text: string) {
+  await db.insert(botMessages).values({
+    chatId: BigInt(chatId),
+    senderName: "Gremlin",
+    text,
+    role: "assistant",
+  });
 }
 
-function getRandomSticker(chatId: number): string | null {
-  const log = groupStickerLog.get(chatId);
-  if (!log || log.length === 0) return null;
-  return log[Math.floor(Math.random() * log.length)];
+async function logGroupSticker(chatId: number, fileId: string) {
+  await db.insert(botStickers).values({
+    chatId: BigInt(chatId),
+    fileId,
+  }).onConflictDoNothing();
 }
 
-function getGroupVibeContext(chatId: number): string | undefined {
-  const log = groupMessageLog.get(chatId);
-  if (!log || log.length < 3) return undefined;
-  return log.slice(-20).join("\n");
+async function getRandomSticker(chatId: number): Promise<string | null> {
+  const rows = await db.select().from(botStickers).where(eq(botStickers.chatId, BigInt(chatId)));
+  if (rows.length === 0) return null;
+  return rows[Math.floor(Math.random() * rows.length)].fileId;
 }
+
+async function getGroupVibeContext(chatId: number): Promise<string | undefined> {
+  const rows = await db.select().from(botMessages)
+    .where(eq(botMessages.chatId, BigInt(chatId)))
+    .orderBy(desc(botMessages.createdAt))
+    .limit(20);
+  if (rows.length < 3) return undefined;
+  return rows.reverse().map((r) => `${r.senderName}: ${r.text}`).join("\n");
+}
+
+async function getConversationHistory(chatId: number) {
+  const rows = await db.select().from(botMessages)
+    .where(and(eq(botMessages.chatId, BigInt(chatId))))
+    .orderBy(desc(botMessages.createdAt))
+    .limit(20);
+  return rows.reverse().map((r) => ({ role: r.role as "user" | "assistant", content: r.text }));
+}
+
+async function saveMessage(chatId: number, role: "user" | "assistant", text: string, senderName?: string) {
+  await db.insert(botMessages).values({
+    chatId: BigInt(chatId),
+    senderName: senderName ?? (role === "assistant" ? "Gremlin" : ""),
+    text,
+    role,
+  });
+}
+
+// ─── GAME STATE HELPERS ──────────────────────────────────────────────────────
+
+async function getActiveGame(chatId: number, gameType: string) {
+  const rows = await db.select().from(botActiveGames)
+    .where(and(eq(botActiveGames.chatId, BigInt(chatId)), eq(botActiveGames.gameType, gameType)))
+    .limit(1);
+  return rows.length > 0 ? rows[0] : null;
+}
+
+async function clearExpiredGames() {
+  await db.delete(botActiveGames).where(lt(botActiveGames.expiresAt, new Date()));
+}
+
+// ─── AI RESPONSE ─────────────────────────────────────────────────────────────
 
 async function getAIResponse(
   messages: Array<{ role: "user" | "assistant" | "system"; content: string }>,
@@ -139,7 +204,7 @@ async function getAIResponse(
   chatId?: number,
 ): Promise<string> {
   const systemPrompt = systemOverride ?? buildSystemPrompt(
-    chatId !== undefined ? getGroupVibeContext(chatId) : undefined
+    chatId !== undefined ? await getGroupVibeContext(chatId) : undefined
   );
   const model = PROVIDER_MODELS[ACTIVE_PROVIDER];
 
@@ -173,48 +238,20 @@ async function getAIResponse(
   return response.choices[0]?.message?.content ?? "والله ما أدري شگول";
 }
 
-const conversationHistory = new Map<
-  number,
-  Array<{ role: "user" | "assistant"; content: string }>
->();
-
-function getHistory(chatId: number) {
-  if (!conversationHistory.has(chatId)) conversationHistory.set(chatId, []);
-  return conversationHistory.get(chatId)!;
-}
-
-function addToHistory(chatId: number, role: "user" | "assistant", content: string) {
-  const history = getHistory(chatId);
-  history.push({ role, content });
-  if (history.length > 20) history.splice(0, history.length - 20);
-}
-
 async function sendTypingAndReply(chatId: number, text: string) {
   await bot.sendChatAction(chatId, "typing");
+  const history = await getConversationHistory(chatId);
   const reply = await getAIResponse(
-    [...getHistory(chatId), { role: "user", content: text }],
+    [...history, { role: "user", content: text }],
     undefined,
     chatId,
   );
-  addToHistory(chatId, "user", text);
-  addToHistory(chatId, "assistant", reply);
+  await saveMessage(chatId, "user", text);
+  await saveMessage(chatId, "assistant", reply);
   return reply;
 }
 
-interface TriviaState {
-  messageId: number;
-  correctAnswer: string;
-  question: string;
-}
-
-interface RiddleState {
-  messageId: number;
-  answer: string;
-  riddle: string;
-}
-
-const activeTrivia = new Map<number, TriviaState>();
-const activeRiddle = new Map<number, RiddleState>();
+// ─── COMMANDS ─────────────────────────────────────────────────────────────────
 
 const COMMANDS_TEXT = `الأوامر:
 🗣️ /ask [سؤال] — اسألني أي شيء
@@ -412,17 +449,22 @@ The "answer" field must be exactly one of: A, B, C, or D.`,
       `🧠 وقت الثقافة!\n\n${trivia.question}\n\n${optionsText}\n\nردّ على هذه الرسالة بـ A أو B أو C أو D!`,
     );
 
-    activeTrivia.set(chatId, {
-      messageId: triviaMsg.message_id,
-      correctAnswer: trivia.answer.toUpperCase(),
+    const expiresAt = new Date(Date.now() + 60_000);
+    await db.insert(botActiveGames).values({
+      chatId: BigInt(chatId),
+      messageId: BigInt(triviaMsg.message_id),
+      gameType: "trivia",
+      answer: trivia.answer.toUpperCase(),
       question: trivia.question,
+      options: trivia.options,
+      expiresAt,
     });
 
-    setTimeout(() => {
-      const state = activeTrivia.get(chatId);
-      if (state && state.messageId === triviaMsg.message_id) {
-        activeTrivia.delete(chatId);
-        bot.sendMessage(
+    setTimeout(async () => {
+      const game = await getActiveGame(chatId, "trivia");
+      if (game && game.messageId === BigInt(triviaMsg.message_id)) {
+        await db.delete(botActiveGames).where(eq(botActiveGames.id, game.id));
+        await bot.sendMessage(
           chatId,
           `⏰ انتهى الوقت! الإجابة كانت **${trivia.answer}** — ${trivia.options[trivia.answer]}.\n\n${trivia.explanation}`,
           { parse_mode: "Markdown", reply_to_message_id: triviaMsg.message_id },
@@ -464,17 +506,21 @@ bot.onText(/\/riddle/, async (msg) => {
       `❓ وقت الألغاز!\n\n${riddleData.riddle}\n\nردّ على هذه الرسالة بجوابك! سأكشفه بعد 45 ثانية.`,
     );
 
-    activeRiddle.set(chatId, {
-      messageId: riddleMsg.message_id,
+    const expiresAt = new Date(Date.now() + 45_000);
+    await db.insert(botActiveGames).values({
+      chatId: BigInt(chatId),
+      messageId: BigInt(riddleMsg.message_id),
+      gameType: "riddle",
       answer: riddleData.answer,
-      riddle: riddleData.riddle,
+      question: riddleData.riddle,
+      expiresAt,
     });
 
-    setTimeout(() => {
-      const state = activeRiddle.get(chatId);
-      if (state && state.messageId === riddleMsg.message_id) {
-        activeRiddle.delete(chatId);
-        bot.sendMessage(
+    setTimeout(async () => {
+      const game = await getActiveGame(chatId, "riddle");
+      if (game && game.messageId === BigInt(riddleMsg.message_id)) {
+        await db.delete(botActiveGames).where(eq(botActiveGames.id, game.id));
+        await bot.sendMessage(
           chatId,
           `🔓 الجواب هو: **${riddleData.answer}**!`,
           { parse_mode: "Markdown", reply_to_message_id: riddleMsg.message_id },
@@ -489,13 +535,13 @@ bot.onText(/\/riddle/, async (msg) => {
 
 bot.onText(/\/clear/, async (msg) => {
   const chatId = msg.chat.id;
-  conversationHistory.delete(chatId);
+  await db.delete(botMessages).where(eq(botMessages.chatId, BigInt(chatId)));
   await bot.sendMessage(chatId, "تم مسح الذاكرة! بداية جديدة 🧹 (نسيت كل الحرج اللي قلته مسبقاً)");
 });
 
 bot.onText(/\/sticker/, async (msg) => {
   const chatId = msg.chat.id;
-  const stickerId = getRandomSticker(chatId);
+  const stickerId = await getRandomSticker(chatId);
   if (stickerId) {
     await bot.sendSticker(chatId, stickerId);
   } else {
@@ -503,17 +549,27 @@ bot.onText(/\/sticker/, async (msg) => {
   }
 });
 
-async function handleTriviaGuess(msg: TelegramBot.Message, state: TriviaState) {
+// ─── GAME GUESS HANDLERS ─────────────────────────────────────────────────────
+
+async function handleTriviaGuess(msg: TelegramBot.Message) {
   const chatId = msg.chat.id;
+  const game = await getActiveGame(chatId, "trivia");
+  if (!game) return;
+
+  const repliedToMsgId = msg.reply_to_message?.message_id;
+  if (repliedToMsgId !== Number(game.messageId)) return;
+
   const guess = msg.text?.trim().toUpperCase().charAt(0);
   if (!["A", "B", "C", "D"].includes(guess ?? "")) return;
 
   const name = msg.from?.first_name ?? "someone";
-  if (guess === state.correctAnswer) {
-    activeTrivia.delete(chatId);
+  if (guess === game.answer.toUpperCase()) {
+    await db.delete(botActiveGames).where(eq(botActiveGames.id, game.id));
+    const options = game.options as Record<string, string> | null;
+    const answerText = options?.[game.answer] ?? "";
     await bot.sendMessage(
       chatId,
-      `✅ ${name} صح! الإجابة هي **${state.correctAnswer}**! 🎉`,
+      `✅ ${name} صح! الإجابة هي **${game.answer}**${answerText ? ` — ${answerText}` : ""}! 🎉`,
       { parse_mode: "Markdown", reply_to_message_id: msg.message_id },
     );
   } else {
@@ -525,17 +581,23 @@ async function handleTriviaGuess(msg: TelegramBot.Message, state: TriviaState) {
   }
 }
 
-async function handleRiddleGuess(msg: TelegramBot.Message, state: RiddleState) {
+async function handleRiddleGuess(msg: TelegramBot.Message) {
   const chatId = msg.chat.id;
+  const game = await getActiveGame(chatId, "riddle");
+  if (!game) return;
+
+  const repliedToMsgId = msg.reply_to_message?.message_id;
+  if (repliedToMsgId !== Number(game.messageId)) return;
+
   const guess = msg.text?.trim().toLowerCase() ?? "";
-  const answer = state.answer.toLowerCase();
+  const answer = game.answer.toLowerCase();
   const name = msg.from?.first_name ?? "someone";
 
   if (guess.includes(answer) || answer.includes(guess)) {
-    activeRiddle.delete(chatId);
+    await db.delete(botActiveGames).where(eq(botActiveGames.id, game.id));
     await bot.sendMessage(
       chatId,
-      `🎉 ${name} حلّها! الجواب هو **${state.answer}**! برافو! 🧠`,
+      `🎉 ${name} حلّها! الجواب هو **${game.answer}**! برافو! 🧠`,
       { parse_mode: "Markdown", reply_to_message_id: msg.message_id },
     );
   } else {
@@ -547,38 +609,38 @@ async function handleRiddleGuess(msg: TelegramBot.Message, state: RiddleState) {
   }
 }
 
+// ─── MESSAGE HANDLER ─────────────────────────────────────────────────────────
+
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
   const isPrivateChat = msg.chat.type === "private";
 
   if (!isPrivateChat && msg.from && msg.from.id !== botId) {
-    trackMember(chatId, msg.from);
+    await trackMember(chatId, msg.from);
     const senderName = msg.from.first_name ?? "مجهول";
     if (text && !text.startsWith("/")) {
-      logGroupMessage(chatId, senderName, text);
+      await logGroupMessage(chatId, senderName, text);
     }
     if (msg.sticker?.file_id) {
-      logGroupSticker(chatId, msg.sticker.file_id);
+      await logGroupSticker(chatId, msg.sticker.file_id);
     }
+  }
+
+  if (isPrivateChat && msg.from) {
+    await ensureGroup(chatId, "private");
   }
 
   if (!text) return;
   if (text.startsWith("/")) return;
+
   const repliedToMsgId = msg.reply_to_message?.message_id;
   const repliedToUserId = msg.reply_to_message?.from?.id;
   const isReplyToBot = repliedToUserId === botId && botId !== 0;
 
-  const triviaState = activeTrivia.get(chatId);
-  if (triviaState && isReplyToBot && repliedToMsgId === triviaState.messageId) {
-    await handleTriviaGuess(msg, triviaState);
-    return;
-  }
-
-  const riddleState = activeRiddle.get(chatId);
-  if (riddleState && isReplyToBot && repliedToMsgId === riddleState.messageId) {
-    await handleRiddleGuess(msg, riddleState);
-    return;
+  if (isReplyToBot && repliedToMsgId) {
+    await handleTriviaGuess(msg);
+    await handleRiddleGuess(msg);
   }
 
   const isMentioned =
@@ -611,7 +673,7 @@ bot.on("message", async (msg) => {
     });
 
     if (!isPrivateChat && Math.random() < 0.18) {
-      const stickerId = getRandomSticker(chatId);
+      const stickerId = await getRandomSticker(chatId);
       if (stickerId) {
         await bot.sendSticker(chatId, stickerId);
       }
@@ -628,11 +690,17 @@ bot.on("polling_error", (err) => {
   logger.error({ err }, "Telegram polling error");
 });
 
+// ─── SPONTANEOUS BEHAVIORS ────────────────────────────────────────────────────
+
 async function pingRandomMember() {
-  for (const [chatId, members] of groupMembers.entries()) {
-    if (members.size < 2) continue;
-    const member = getRandomMember(chatId);
+  const groups = await db.select().from(botGroups);
+  for (const group of groups) {
+    const chatId = Number(group.id);
+    const member = await getRandomMember(chatId);
     if (!member) continue;
+
+    const memberCount = await db.select().from(botGroupMembers).where(eq(botGroupMembers.chatId, group.id));
+    if (memberCount.length < 2) continue;
 
     try {
       const mention = mentionUser(member);
@@ -668,8 +736,11 @@ function scheduleNextPing() {
 }
 
 async function spontaneousGroupMessage() {
-  for (const [chatId, members] of groupMembers.entries()) {
-    if (members.size < 1) continue;
+  const groups = await db.select().from(botGroups);
+  for (const group of groups) {
+    const chatId = Number(group.id);
+    const memberCount = await db.select().from(botGroupMembers).where(eq(botGroupMembers.chatId, group.id));
+    if (memberCount.length < 1) continue;
 
     try {
       const type = Math.random() < 0.5 ? "opinion" : "question";
@@ -688,6 +759,7 @@ async function spontaneousGroupMessage() {
       if (!message) continue;
 
       await bot.sendMessage(chatId, message);
+      await logBotMessage(chatId, message);
       logger.info({ chatId, type }, "Spontaneous group message sent");
     } catch (err) {
       logger.warn({ err, chatId }, "Failed to send spontaneous message");
@@ -705,9 +777,12 @@ function scheduleNextSpontaneous() {
   }, delay);
 }
 
+// Clean up expired games periodically
+setInterval(clearExpiredGames, 5 * 60 * 1000);
+
 scheduleNextPing();
 scheduleNextSpontaneous();
 
-logger.info("Telegram bot started with polling");
+logger.info("Telegram bot started with polling (database-backed)");
 
 export { bot };
